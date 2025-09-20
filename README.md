@@ -80,9 +80,16 @@ ARTIFACTS_DIR=./artifacts
 
 ```bash
 # Terminal 1 - Start the worker
-cd apps/worker
-source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
+## For Mac
+  cd apps/worker
+  source .venv/bin/activate
+  uvicorn app.main:app --reload --port 8000
+
+## For Windows
+  cd apps\worker
+  python -m venv .venv
+  .\.venv\Scripts\activate
+  (You’ll see (.venv) in your PowerShell prompt when activated.)
 
 # Terminal 2 - Start the web app
 pnpm --filter web dev
