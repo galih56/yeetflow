@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models import Event, EventType, Flow, Run, RunStatus, User
+from app.models import Event, EventType, Flow, Run, RunStatus, SessionStatus, User
 from app.models import Session as DBSession
 
 # Test constants
@@ -11,7 +11,7 @@ COMPLETE_REL_PASSWORD = "completerel_password_hash"
 CASCADE_REL_PASSWORD = "cascaderel_password_hash"
 
 # Magic value constants
-EXPECTED_SESSION_COUNT = 2
+EXPECTED_FLOW_COUNT = 2
 EXPECTED_EVENT_COUNT = 2
 
 
@@ -33,7 +33,7 @@ class TestRelationshipsAndCascades:
         result = await session.execute(stmt)
         user_with_flows = result.scalar_one()
 
-        assert len(user_with_flows.flows) == EXPECTED_SESSION_COUNT
+        assert len(user_with_flows.flows) == EXPECTED_FLOW_COUNT
         flow_keys = [f.key for f in user_with_flows.flows]
         assert "rel-flow1" in flow_keys
         assert "rel-flow2" in flow_keys
@@ -54,8 +54,8 @@ class TestRelationshipsAndCascades:
         await session.commit()
 
         # Create sessions and events
-        session1 = DBSession(run_id=run.id, status="active")
-        session2 = DBSession(run_id=run.id, status="completed")
+        session1 = DBSession(run_id=run.id, status=SessionStatus.ACTIVE)
+        session2 = DBSession(run_id=run.id, status=SessionStatus.ENDED)
         event1 = Event(run_id=run.id, type=EventType.PROGRESS, message="Starting")
         event2 = Event(run_id=run.id, type=EventType.COMPLETED, message="Done")
 
@@ -76,9 +76,13 @@ class TestRelationshipsAndCascades:
         result = await session.execute(stmt)
         complete_run = result.scalar_one()
 
+        # Verify the actual stored session statuses
+        statuses = {getattr(s.status, "value", s.status) for s in complete_run.sessions}
+        assert statuses == {"active", "ended"}
+
         assert complete_run.user.email == user.email
         assert complete_run.flow.key == flow.key
-        assert len(complete_run.sessions) == EXPECTED_SESSION_COUNT
+        assert len(complete_run.sessions) == EXPECTED_FLOW_COUNT
         assert len(complete_run.events) == EXPECTED_EVENT_COUNT
         assert complete_run.status == RunStatus.RUNNING
 

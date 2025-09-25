@@ -5,42 +5,47 @@ const WORKER_API_TOKEN = process.env.WORKER_API_TOKEN;
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { path: string[] } }
+  { params }: { params: { path: string[] } },
 ) {
-  return proxyRequest(request, params.path);
+  const { path } = params;
+  return proxyRequest(request, path);
 }
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { path: string[] } }
+  { params }: { params: { path: string[] } },
 ) {
-  return proxyRequest(request, params.path);
+  const { path } = params;
+  return proxyRequest(request, path);
 }
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { path: string[] } }
+  { params }: { params: { path: string[] } },
 ) {
-  return proxyRequest(request, params.path);
+  const { path } = params;
+  return proxyRequest(request, path);
 }
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { path: string[] } }
+  { params }: { params: { path: string[] } },
 ) {
-  return proxyRequest(request, params.path);
+  const { path } = params;
+  return proxyRequest(request, path);
 }
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { path: string[] } }
+  { params }: { params: { path: string[] } },
 ) {
-  return proxyRequest(request, params.path);
+  const { path } = params;
+  return proxyRequest(request, path);
 }
 
 async function proxyRequest(
   request: NextRequest,
-  pathSegments: string[]
+  pathSegments: string[],
 ): Promise<NextResponse> {
   try {
     // Build the target URL
@@ -50,7 +55,9 @@ async function proxyRequest(
     // Get the original URL and remove the /api/worker prefix
     const url = new URL(request.url);
     const searchParams = url.searchParams.toString();
-    const fullTargetUrl = searchParams ? `${targetUrl}?${searchParams}` : targetUrl;
+    const fullTargetUrl = searchParams
+      ? `${targetUrl}?${searchParams}`
+      : targetUrl;
 
     // Prepare headers
     const headers = new Headers();
@@ -61,8 +68,9 @@ async function proxyRequest(
       }
     }
 
-    // Add API token if available
-    if (WORKER_API_TOKEN) {
+    // Add API token only if no user Authorization header (T016)
+    const existingAuth = request.headers.get('authorization');
+    if (!existingAuth && WORKER_API_TOKEN) {
       headers.set('Authorization', `Bearer ${WORKER_API_TOKEN}`);
     }
 
@@ -70,9 +78,10 @@ async function proxyRequest(
     const response = await fetch(fullTargetUrl, {
       method: request.method,
       headers,
-      body: request.method !== 'GET' && request.method !== 'HEAD'
-        ? await request.text()
-        : undefined,
+      body:
+        request.method !== 'GET' && request.method !== 'HEAD'
+          ? await request.text()
+          : undefined,
     });
 
     // Create response with the worker's response
@@ -88,12 +97,11 @@ async function proxyRequest(
       statusText: response.statusText,
       headers: responseHeaders,
     });
-
   } catch (error) {
     console.error('Proxy error:', error);
     return NextResponse.json(
       { error: 'Failed to proxy request to worker' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

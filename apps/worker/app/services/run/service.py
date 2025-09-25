@@ -2,10 +2,23 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Run, RunCreate, RunStatus
+from app.models import (
+    Event,
+    EventType,
+    Flow,
+    Run,
+    RunContinue,
+    RunCreate,
+    RunStatus,
+    SessionStatus,
+    User,
+    UserRole,
+)
 from app.models import Session as SessionModel
+from app.services.flow.errors import FlowAccessDeniedError, FlowNotFoundError
 from app.services.run.errors import (
     MissingSessionURLError,
     RunNotFoundError,
@@ -29,13 +42,20 @@ class RunService:
         self.steel_service = steel_service or SteelService()
         self.repository = repository or RunRepository()
 
-    async def create_run(self, request: RunCreate, session: AsyncSession) -> Run:
-        """Create a new run with Steel.dev session integration."""
+    async def create_run_with_user(
+        self, request: RunCreate, user: User, session: AsyncSession
+    ) -> Run:
+        """Create a new run with authenticated user."""
+        # Validate that the flow exists and user has access to it
+        await self._validate_flow_exists_and_access(request.flow_id, user, session)
+
         run_id = uuid4()
 
         try:
-            # Create initial run record
-            run = await self._create_run_record(request, run_id, session)
+            # Create initial run record with authenticated user's ID
+            run = await self._create_run_record_with_user(
+                request, run_id, user, session
+            )
 
             # Create Steel session
             session_data = await self.steel_service.create_session()
@@ -78,6 +98,12 @@ class RunService:
         else:
             return run
 
+    async def list_runs_for_user(
+        self, user_id: UUID, session: AsyncSession, skip: int = 0, limit: int = 100
+    ) -> list[Run]:
+        """List runs for a specific user with pagination."""
+        return await self.repository.list_runs_for_user(session, user_id, skip, limit)
+
     async def get_run(self, run_id: UUID, session: AsyncSession) -> Run:
         """Get a run by its ID."""
         run = await self.repository.get_by_id(session, run_id)
@@ -95,42 +121,11 @@ class RunService:
         self, run_id: UUID, session: AsyncSession
     ) -> list[SessionModel]:
         """Get all sessions for a specific run."""
-        # Verify run exists first
-        await self.get_run(run_id, session)
         return await self.repository.get_sessions(session, run_id)
 
-    async def get_run_events(
-        self, run_id: UUID, session: AsyncSession
-    ) -> list[SessionModel]:
+    async def get_run_events(self, run_id: UUID, session: AsyncSession) -> list[Event]:
         """Get all events for a specific run."""
-        # Verify run exists first
-        await self.get_run(run_id, session)
-        # TODO: Implement event repository when events are added
-        # For now, return empty list
-        return []
-
-    # Private helper methods
-    async def _create_run_record(
-        self, request: RunCreate, run_id: UUID, session: AsyncSession
-    ) -> Run:
-        """Create the initial run record."""
-        run = Run(
-            id=run_id,
-            flow_id=request.flow_id,
-            user_id=request.user_id,
-            status=RunStatus.PENDING,
-        )
-        run = await self.repository.create(session, run)
-
-        # Emit pending status event
-        await self._emit_progress_safe(
-            run_id,
-            {
-                "status": RunStatus.PENDING.value,
-                "message": "Run created, initializing session",
-            },
-        )
-        return run
+        return await self.repository.get_events(session, run_id)
 
     async def _handle_session_creation_failure(
         self, run_id: UUID, session: AsyncSession, error_message: str
@@ -166,7 +161,7 @@ class RunService:
             run_id=run_id,
             browser_provider_session_id=browser_session_id,
             session_url=session_url,
-            status="running",
+            status=SessionStatus.ACTIVE,
         )
         await self.repository.create_session(session, db_session)
 
@@ -194,3 +189,98 @@ class RunService:
             await emit_progress(str(run_id), data)
         except (ConnectionError, TimeoutError, OSError, ValueError) as e:
             logger.warning("Failed to emit progress for run %s: %s", run_id, str(e))
+
+    async def _validate_flow_exists_and_access(
+        self, flow_id: UUID, user: User, session: AsyncSession
+    ) -> None:
+        """Validate that the flow exists and user has access to it."""
+
+        # Check if flow exists
+        flow_result = await session.execute(select(Flow).where(Flow.id == flow_id))
+        flow = flow_result.scalar_one_or_none()
+
+        if not flow:
+            raise FlowNotFoundError(str(flow_id))
+
+        # Check if user has access to the flow
+        # For now, users can access flows they created or if they're admin
+        # This can be extended with more complex permission systems later
+        if flow.created_by != user.id and user.role != UserRole.ADMIN:
+            raise FlowAccessDeniedError(str(flow_id))
+
+    async def _create_run_record_with_user(
+        self, request: RunCreate, run_id: UUID, user: User, session: AsyncSession
+    ) -> Run:
+        """Create the initial run record with authenticated user."""
+        run = Run(
+            id=run_id,
+            flow_id=request.flow_id,
+            user_id=user.id,  # Use authenticated user's ID
+            status=RunStatus.PENDING,
+        )
+        run = await self.repository.create(session, run)
+
+        # Emit pending status event
+        await self._emit_progress_safe(
+            run_id,
+            {
+                "status": RunStatus.PENDING.value,
+                "message": "Run created, initializing session",
+            },
+        )
+        return run
+
+    async def update_run(
+        self, run_id: UUID, request: dict, session: AsyncSession
+    ) -> Run:
+        """Update an existing run."""
+        run = await self.repository.get_by_id(session, run_id)
+        if not run:
+            raise RunNotFoundError(str(run_id))
+
+        # Update fields from request
+        if "result_uri" in request:
+            run.result_uri = request["result_uri"]
+        if "status" in request:
+            run.status = RunStatus(request["status"])
+        if "error" in request:
+            run.error = request["error"]
+        if "ended_at" in request:
+            run.ended_at = request["ended_at"]
+
+        run.updated_at = datetime.now(UTC)
+        return await self.repository.update(session, run)
+
+    async def continue_run(
+        self, run_id: UUID, request: RunContinue, session: AsyncSession
+    ) -> Run:
+        """Continue a run that is awaiting input."""
+        run = await self.repository.get_by_id(session, run_id)
+        if not run:
+            raise RunNotFoundError(str(run_id))
+
+        # Validate that run is in awaiting_input status
+        if run.status != RunStatus.AWAITING_INPUT:
+            error_msg = (
+                f"Run is not awaiting input (current status: {run.status.value})"
+            )
+            raise ValueError(error_msg)
+
+        # Store request context in an event for audit trail
+        if request.input_payload is not None or request.notes is not None:
+            event = Event(
+                run_id=run_id,
+                type=EventType.RUN_CONTINUED,
+                message="Run continued",
+                payload={
+                    "input_payload": request.input_payload,
+                    "notes": request.notes,
+                },
+            )
+            session.add(event)
+
+        # Set run status to running
+        run.status = RunStatus.RUNNING
+        run.updated_at = datetime.now(UTC)
+
+        return await self.repository.update(session, run)

@@ -4,7 +4,8 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.models import Run
+from app.constants import MAX_RUN_LIST_LIMIT
+from app.models import Event, Run
 from app.models import Session as SessionModel
 
 logger = logging.getLogger(__name__)
@@ -33,10 +34,39 @@ class RunRepository:
         return run
 
     async def list_runs(
-        self, session: AsyncSession, skip: int = 0, limit: int = 100
+        self, session: AsyncSession, skip: int | None = 0, limit: int | None = 100
     ) -> list[Run]:
         """List runs with pagination."""
-        result = await session.execute(select(Run).offset(skip).limit(limit))
+        # Normalize pagination params
+        skip = max(0, int(skip or 0))
+        limit = max(1, min(int(limit or 100), MAX_RUN_LIST_LIMIT))
+        result = await session.execute(
+            select(Run)
+            .order_by(Run.created_at.desc(), Run.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_runs_for_user(
+        self,
+        session: AsyncSession,
+        user_id: UUID,
+        skip: int | None = 0,
+        limit: int | None = 100,
+    ) -> list[Run]:
+        """List runs for a specific user with pagination."""
+        # Normalize pagination params
+        skip = max(0, int(skip or 0))
+        # Enforce a server-side cap to avoid unbounded fetches
+        limit = max(1, min(int(limit or 100), MAX_RUN_LIST_LIMIT))
+        result = await session.execute(
+            select(Run)
+            .where(Run.user_id == user_id)
+            .order_by(Run.created_at.desc(), Run.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
         return list(result.scalars().all())
 
     async def get_sessions(
@@ -56,3 +86,12 @@ class RunRepository:
         await session.commit()
         await session.refresh(session_model)
         return session_model
+
+    async def get_events(self, session: AsyncSession, run_id: UUID) -> list[Event]:
+        """Get all events for a specific run."""
+        result = await session.execute(
+            select(Event)
+            .where(Event.run_id == run_id)
+            .order_by(Event.at.asc(), Event.id.asc())
+        )
+        return list(result.scalars().all())
