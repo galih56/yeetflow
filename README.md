@@ -85,11 +85,10 @@ ARTIFACTS_DIR=./artifacts
   source .venv/bin/activate
   uvicorn app.main:app --reload --port 8000
 
-## For Windows
+## For Windows (PowerShell)
   cd apps\worker
   python -m venv .venv
   .\.venv\Scripts\activate
-  (You’ll see (.venv) in your PowerShell prompt when activated.)
 
 # Terminal 2 - Start the web app
 pnpm --filter web dev
