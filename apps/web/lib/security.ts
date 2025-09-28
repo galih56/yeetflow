@@ -1,16 +1,19 @@
 // Security configuration for YeetFlow
 // Implements Content Security Policy and other security headers
 
+const scriptSrc: string[] = ["'self'"];
+
+if (process.env.NODE_ENV !== 'production') {
+  // Next.js dev server injects inline scripts for HMR and RSC refresh
+  scriptSrc.push("'unsafe-eval'");
+  scriptSrc.push("'unsafe-inline'");
+}
+
 export const securityConfig = {
   contentSecurityPolicy: {
     directives: {
       'default-src': ["'self'"],
-      'script-src': [
-        "'self'",
-        // Allow Next.js scripts
-        "'unsafe-eval'", // Required for Next.js development
-        // TODO: Remove 'unsafe-eval' in production and use nonce/hash
-      ],
+      'script-src': scriptSrc,
       'style-src': [
         "'self'",
         "'unsafe-inline'", // Required for styled-components/Next.js
@@ -21,6 +24,7 @@ export const securityConfig = {
       'connect-src': [
         "'self'",
         process.env.WORKER_BASE_URL || 'http://localhost:8000',
+        ...(process.env.NODE_ENV !== 'production' ? ['ws:', 'wss:'] : []),
       ],
       'frame-ancestors': ["'none'"],
       'form-action': ["'self'"],
@@ -34,7 +38,6 @@ export const securityConfig = {
   headers: {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
-    'X-XSS-Protection': '1; mode=block',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   },
@@ -78,10 +81,24 @@ export class SecurityUtils {
     if (parts.length !== 3) return false;
     
     try {
-      // Validate each part is base64url encoded
-      parts.forEach(part => {
-        const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
-        atob(base64);
+      // Validate each part is base64url encoded and ensure header/payload are JSON
+      parts.forEach((part, index) => {
+        const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+        const paddingLength = (4 - (normalized.length % 4)) % 4;
+        const padded = normalized + '='.repeat(paddingLength);
+
+        let decoded: string;
+        if (typeof atob === 'function') {
+          decoded = atob(padded);
+        } else if (typeof Buffer !== 'undefined') {
+          decoded = Buffer.from(padded, 'base64').toString('utf-8');
+        } else {
+          throw new Error('No base64 decoder available');
+        }
+
+        if (index < 2) {
+          JSON.parse(decoded);
+        }
       });
       return true;
     } catch {
