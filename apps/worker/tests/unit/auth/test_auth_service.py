@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -21,8 +22,15 @@ class TestAuthService:
 
     @pytest.fixture
     def mock_session(self):
-        """Create mock database session."""
-        return AsyncMock()
+        """Create mock database session with sync/async methods mocked appropriately."""
+        session = MagicMock()
+        session.add = MagicMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        session.execute = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        return session
 
     async def test_create_user_first_user_admin(self, auth_service, mock_session):
         """Test creating first user (should become admin)."""
@@ -46,6 +54,49 @@ class TestAuthService:
 
             # Verify first user becomes admin
             assert result.role == UserRole.ADMIN
+
+    async def test_create_user_first_user_triggers_flow_sync(
+        self, auth_service, mock_session
+    ):
+        """First user creation should sync flow registry ownership."""
+
+        user_data = UserCreate(
+            email="sync@example.com", name="Sync User", password="password123"
+        )
+
+        # Mock database state: no existing users
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_session.execute.return_value = mock_result
+        mock_session.add.return_value = None
+        mock_session.commit.return_value = None
+        mock_session.refresh = AsyncMock()
+
+        registry_instance = MagicMock()
+        expected_flows_dir = (
+            Path("app/services/auth/service.py").resolve().parent.parent.parent
+            / "flows"
+        )
+
+        with (
+            patch("app.utils.auth.get_password_hash", return_value="hashed_password"),
+            patch(
+                "app.services.auth.service.FlowRegistry",
+                return_value=registry_instance,
+            ) as registry_ctor,
+            patch(
+                "app.services.auth.service.sync_flows_from_registry", AsyncMock()
+            ) as sync_mock,
+        ):
+            result = await auth_service.create_user(user_data, mock_session, None)
+
+        registry_ctor.assert_called_once_with(expected_flows_dir)
+        sync_mock.assert_awaited_once()
+        sync_mock.assert_awaited_once_with(
+            mock_session,
+            registry_instance,
+            owner_id=result.id,
+        )
 
     async def test_create_user_regular_user(self, auth_service, mock_session):
         """Test creating regular user with specific role."""
